@@ -1,1 +1,51 @@
-
+<!DOCTYPE html><html lang="tr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Boşyer – Kadıköy</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<style>
+*{box-sizing:border-box}html,body{height:100%;margin:0;font-family:system-ui,sans-serif;color:#1B2733}
+#map{position:absolute;inset:0}
+.top{position:absolute;top:calc(env(safe-area-inset-top,0px) + 8px);left:8px;right:8px;background:#fff;border-radius:14px;padding:10px 14px;box-shadow:0 2px 10px rgba(0,0,0,.2);z-index:2}
+.top b{font-size:18px}.top div{font-size:12px;color:#5E6B78}
+.sheet{position:absolute;left:0;right:0;bottom:0;background:#fff;border-radius:20px 20px 0 0;padding:16px 16px calc(env(safe-area-inset-bottom,0px) + 16px);box-shadow:0 -4px 20px rgba(0,0,0,.2);z-index:2}
+.row{display:flex;justify-content:space-between;align-items:baseline}.name{font-size:18px;font-weight:800}
+.slots{display:flex;flex-wrap:wrap;gap:3px;margin:10px 0}.slots b{width:12px;height:18px;border-radius:3px;background:#9aa5b0}
+.slots b.f{background:none;border:2px solid #1D4ED8}
+.acts{display:flex;gap:8px}.acts button{flex:1;border:0;border-radius:12px;padding:13px;font-size:15px;font-weight:700;color:#fff}
+.p{background:#1D4ED8}.l{background:#16A34A}.mute{color:#5E6B78;font-size:13px}
+.toast{position:fixed;left:16px;right:16px;top:90px;background:#1B2733;color:#fff;padding:10px 14px;border-radius:12px;opacity:0;transition:opacity .25s;pointer-events:none;z-index:3}
+.toast.show{opacity:1}
+</style></head><body>
+<div id="map"></div>
+<div class="top"><b>Boşyer</b><div id="st">Sokaklar yükleniyor…</div></div>
+<div class="sheet" id="sheet"><div class="mute">Haritada renkli bir sokağa dokun.</div></div>
+<div class="toast" id="toast"></div>
+<script>
+var NAMES="Bahariye|Moda Cad|Kadife|Caferağa|Söğütlüçeşme|Rıhtım|Altıyol";
+var S={},sel=null,map=new maplibregl.Map({container:"map",center:[29.029,40.9895],zoom:15,
+ style:{version:8,sources:{osm:{type:"raster",tiles:["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],tileSize:256,attribution:"© OpenStreetMap"}},layers:[{id:"osm",type:"raster",source:"osm"}]}});
+function dist(a,b){var R=6371000,r=Math.PI/180,dx=(b[0]-a[0])*r*Math.cos(a[1]*r),dy=(b[1]-a[1])*r;return R*Math.sqrt(dx*dx+dy*dy)}
+function color(s){var r=s.free/s.cap;return r>.3?"#16A34A":r>.08?"#D97706":"#DC2626"}
+function hash(t){var h=7;for(var i=0;i<t.length;i++)h=(h*31+t.charCodeAt(i))>>>0;return h}
+function geo(){return{type:"FeatureCollection",features:Object.keys(S).map(function(n){var s=S[n];
+ return{type:"Feature",properties:{name:n,color:color(s)},geometry:{type:"MultiLineString",coordinates:s.lines}}})}}
+function toast(m){var t=document.getElementById("toast");t.textContent=m;t.classList.add("show");setTimeout(function(){t.classList.remove("show")},2400)}
+function sheet(){var s=S[sel],d="";for(var i=0;i<s.cap;i++)d+='<b class="'+(i<s.free?"f":"")+'"></b>';
+ document.getElementById("sheet").innerHTML='<div class="row"><span class="name">'+sel+'</span><b style="color:'+color(s)+'">'+s.free+' / '+s.cap+' boş</b></div><div class="mute">Kapasite sokak uzunluğundan tahmin edildi · demo verisi</div><div class="slots">'+d+'</div><div class="acts"><button class="p" onclick="act(1)">Park ettim</button><button class="l" onclick="act(-1)">Ayrılıyorum</button></div>'}
+function act(d){var s=S[sel];if(d===1&&s.free>0){s.free--;toast("Kaydedildi.")}else if(d===-1&&s.free<s.cap){s.free++;toast("Yer açıldığı bildirildi.")}
+ map.getSource("st").setData(geo());sheet()}
+map.on("load",function(){
+ var q='[out:json][timeout:25];way["highway"]["name"~"'+NAMES+'",i](40.978,29.012,40.996,29.048);out geom;';
+ fetch("https://overpass-api.de/api/interpreter",{method:"POST",body:"data="+encodeURIComponent(q)}).then(function(r){return r.json()}).then(function(j){
+  j.elements.forEach(function(w){var n=w.tags.name,c=w.geometry.map(function(p){return[p.lon,p.lat]});
+   S[n]=S[n]||{lines:[],len:0};S[n].lines.push(c);for(var i=1;i<c.length;i++)S[n].len+=dist(c[i-1],c[i])});
+  Object.keys(S).forEach(function(n){var s=S[n];s.cap=Math.max(4,Math.round(s.len/6));s.free=hash(n)%(s.cap+1)});
+  map.addSource("st",{type:"geojson",data:geo()});
+  map.addLayer({id:"st",type:"line",source:"st",layout:{"line-cap":"round"},paint:{"line-color":["get","color"],"line-width":8,"line-opacity":.9}});
+  map.on("click","st",function(e){sel=e.features[0].properties.name;sheet()});
+  map.on("mouseenter","st",function(){map.getCanvas().style.cursor="pointer"});
+  document.getElementById("st").textContent=Object.keys(S).length+" sokak yüklendi · demo doluluk verisi";
+ }).catch(function(){document.getElementById("st").textContent="Sokaklar yüklenemedi. Sayfayı yenile."});
+});
+</script></body></html>
