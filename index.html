@@ -22,8 +22,10 @@
 <div class="sheet" id="sheet"><div class="mute">Haritada renkli bir sokağa dokun.</div></div>
 <div class="toast" id="toast"></div>
 <script>
-var NAMES="Bahariye|Moda Cad|Kadife|Caferağa|Söğütlüçeşme|Rıhtım|Altıyol";
-var S={},sel=null,map=new maplibregl.Map({container:"map",center:[29.029,40.9895],zoom:15,
+var NAMES="Bahariye|Moda Cad|Kadife|Caferağa|Söğütlüçeşme|Rıhtım|Altıyol|Kuşdili";
+var URLS=["https://overpass-api.de/api/interpreter","https://overpass.kumi.systems/api/interpreter","https://maps.mail.ru/osm/tools/overpass/api/interpreter"];
+var S={},sel=null,built=false,stEl=document.getElementById("st");
+var map=new maplibregl.Map({container:"map",center:[29.029,40.9895],zoom:15,
  style:{version:8,sources:{osm:{type:"raster",tiles:["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],tileSize:256,attribution:"© OpenStreetMap"}},layers:[{id:"osm",type:"raster",source:"osm"}]}});
 function dist(a,b){var R=6371000,r=Math.PI/180,dx=(b[0]-a[0])*r*Math.cos(a[1]*r),dy=(b[1]-a[1])*r;return R*Math.sqrt(dx*dx+dy*dy)}
 function color(s){var r=s.free/s.cap;return r>.3?"#16A34A":r>.08?"#D97706":"#DC2626"}
@@ -35,17 +37,32 @@ function sheet(){var s=S[sel],d="";for(var i=0;i<s.cap;i++)d+='<b class="'+(i<s.
  document.getElementById("sheet").innerHTML='<div class="row"><span class="name">'+sel+'</span><b style="color:'+color(s)+'">'+s.free+' / '+s.cap+' boş</b></div><div class="mute">Kapasite sokak uzunluğundan tahmin edildi · demo verisi</div><div class="slots">'+d+'</div><div class="acts"><button class="p" onclick="act(1)">Park ettim</button><button class="l" onclick="act(-1)">Ayrılıyorum</button></div>'}
 function act(d){var s=S[sel];if(d===1&&s.free>0){s.free--;toast("Kaydedildi.")}else if(d===-1&&s.free<s.cap){s.free++;toast("Yer açıldığı bildirildi.")}
  map.getSource("st").setData(geo());sheet()}
-map.on("load",function(){
+function build(j){
+ if(built)return true;
+ if(!j||!j.elements||!j.elements.length)throw new Error("bos");
+ j.elements.forEach(function(w){if(!w.geometry)return;var n=w.tags.name,c=w.geometry.map(function(p){return[p.lon,p.lat]});
+  S[n]=S[n]||{lines:[],len:0};S[n].lines.push(c);for(var i=1;i<c.length;i++)S[n].len+=dist(c[i-1],c[i])});
+ Object.keys(S).forEach(function(n){var s=S[n];s.cap=Math.max(4,Math.round(s.len/6));s.free=hash(n)%(s.cap+1)});
+ map.addSource("st",{type:"geojson",data:geo()});
+ map.addLayer({id:"hit",type:"line",source:"st",layout:{"line-cap":"round"},paint:{"line-color":"#000","line-width":32,"line-opacity":0.01}});
+ map.addLayer({id:"st",type:"line",source:"st",layout:{"line-cap":"round"},paint:{"line-color":["get","color"],"line-width":8,"line-opacity":.9}});
+ map.on("click","hit",function(e){sel=e.features[0].properties.name;sheet()});
+ built=true;stEl.textContent=Object.keys(S).length+" sokak yüklendi · demo doluluk verisi";
+ try{localStorage.setItem("bs_streets",JSON.stringify(j))}catch(e){}
+ return true;
+}
+function load(){
  var q='[out:json][timeout:25];way["highway"]["name"~"'+NAMES+'",i](40.978,29.012,40.996,29.048);out geom;';
- fetch("https://overpass-api.de/api/interpreter",{method:"POST",body:"data="+encodeURIComponent(q)}).then(function(r){return r.json()}).then(function(j){
-  j.elements.forEach(function(w){var n=w.tags.name,c=w.geometry.map(function(p){return[p.lon,p.lat]});
-   S[n]=S[n]||{lines:[],len:0};S[n].lines.push(c);for(var i=1;i<c.length;i++)S[n].len+=dist(c[i-1],c[i])});
-  Object.keys(S).forEach(function(n){var s=S[n];s.cap=Math.max(4,Math.round(s.len/6));s.free=hash(n)%(s.cap+1)});
-  map.addSource("st",{type:"geojson",data:geo()});
-  map.addLayer({id:"st",type:"line",source:"st",layout:{"line-cap":"round"},paint:{"line-color":["get","color"],"line-width":8,"line-opacity":.9}});
-  map.on("click","st",function(e){sel=e.features[0].properties.name;sheet()});
-  map.on("mouseenter","st",function(){map.getCanvas().style.cursor="pointer"});
-  document.getElementById("st").textContent=Object.keys(S).length+" sokak yüklendi · demo doluluk verisi";
- }).catch(function(){document.getElementById("st").textContent="Sokaklar yüklenemedi. Sayfayı yenile."});
+ var i=0;
+ function next(){
+  if(i>=URLS.length){stEl.textContent="Sokaklar yüklenemedi. Buraya dokunup tekrar dene.";stEl.onclick=function(){i=0;stEl.onclick=null;next()};return}
+  var u=URLS[i++];stEl.textContent="Sokaklar yükleniyor… ("+i+"/"+URLS.length+")";
+  fetch(u,{method:"POST",body:"data="+encodeURIComponent(q)}).then(function(r){if(!r.ok)throw new Error(r.status);return r.json()}).then(build).catch(next);
+ }
+ next();
+}
+map.on("load",function(){
+ try{var c=localStorage.getItem("bs_streets");if(c){build(JSON.parse(c));return}}catch(e){}
+ load();
 });
 </script></body></html>
