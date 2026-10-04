@@ -13,25 +13,42 @@
 .slots{display:flex;flex-wrap:wrap;gap:3px;margin:10px 0}.slots b{width:14px;height:20px;border-radius:3px;background:#9aa5b0}
 .slots b.f{background:none;border:2px solid #1D4ED8}
 .acts{display:flex;gap:8px}.acts button{flex:1;border:0;border-radius:12px;padding:13px;font-size:15px;font-weight:700;color:#fff}
-.p{background:#1D4ED8}.l{background:#16A34A}.mute{color:#5E6B78;font-size:13px}
+.p{background:#1D4ED8}.l{background:#16A34A}.d{background:#DC2626}.mute{color:#5E6B78;font-size:13px}
 .toast{position:fixed;left:16px;right:16px;top:90px;background:#1B2733;color:#fff;padding:10px 14px;border-radius:12px;opacity:0;transition:opacity .25s;pointer-events:none;z-index:3}
 .toast.show{opacity:1}
 </style></head><body>
 <div id="map"></div>
 <div class="top"><b>Boşyer</b><div id="st">Harita yükleniyor…</div></div>
-<div class="sheet" id="sheet"><div class="mute">Sokağa dokun: o parçadaki boş yer sayısını gör.</div></div>
+<div class="sheet" id="sheet"><div class="mute">Sokağa dokun: o kısımdaki boş yer bilgisini gör. Gri: henüz kimse bildirmedi.</div></div>
 <div class="toast" id="toast"></div>
-<script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
+import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js";
+import { getFirestore, collection, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
+
+var firebaseConfig = {
+  apiKey: "AIzaSyClesxP-n3EXmKVDVHa9w9nklcxahPL96M",
+  authDomain: "bosyer-913dc.firebaseapp.com",
+  projectId: "bosyer-913dc",
+  storageBucket: "bosyer-913dc.firebasestorage.app",
+  messagingSenderId: "280182693022",
+  appId: "1:280182693022:web:dfd2abb5e828f088b6ef8f"
+};
+var fbApp=initializeApp(firebaseConfig),auth=getAuth(fbApp),db=getFirestore(fbApp);
+var online=false,signedIn=false;
+
 var URLS=["https://overpass-api.de/api/interpreter","https://overpass.kumi.systems/api/interpreter","https://maps.mail.ru/osm/tools/overpass/api/interpreter"];
 var BOUNDS=[[29.0,40.94],[29.115,41.012]];
 var CELL_LON=0.006,CELL_LAT=0.004,MINZ=16;
-var SEG={},CELLS={},queue=[],busy=false,sel=null,stEl=document.getElementById("st");
+var SEG={},REMOTE={},CELLS={},queue=[],busy=false,sel=null,stEl=document.getElementById("st");
 var map=new maplibregl.Map({container:"map",center:[29.029,40.9895],zoom:16,maxBounds:[[28.95,40.9],[29.16,41.05]],
  style:{version:8,sources:{osm:{type:"raster",tiles:["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],tileSize:256,attribution:"© OpenStreetMap"}},layers:[{id:"osm",type:"raster",source:"osm"}]}});
+
 function dist(a,b){var R=6371000,r=Math.PI/180,dx=(b[0]-a[0])*r*Math.cos(a[1]*r),dy=(b[1]-a[1])*r;return R*Math.sqrt(dx*dx+dy*dy)}
-function color(s){var r=s.free/s.cap;return r>.3?"#16A34A":r>.08?"#D97706":"#DC2626"}
-function hash(t){var h=7;for(var i=0;i<t.length;i++)h=(h*31+t.charCodeAt(i))>>>0;return h}
-function toast(m){var t=document.getElementById("toast");t.textContent=m;t.classList.add("show");setTimeout(function(){t.classList.remove("show")},2400)}
+function color(s){if(s.free==null)return "#8C99A6";var r=s.free/s.cap;return r>.3?"#16A34A":r>.08?"#D97706":"#DC2626"}
+function toast(m){var t=document.getElementById("toast");t.textContent=m;t.classList.add("show");setTimeout(function(){t.classList.remove("show")},2600)}
+function ago(ts){if(!ts)return "";var m=Math.floor((Date.now()-ts)/60000);return m<1?"şimdi":m<60?m+" dk önce":Math.floor(m/60)+" sa önce"}
+
 function split(c){
  var out=[],cur=[c[0]],acc=0;
  for(var i=1;i<c.length;i++){acc+=dist(c[i-1],c[i]);cur.push(c[i]);
@@ -41,17 +58,43 @@ function split(c){
 function geo(){return{type:"FeatureCollection",features:Object.keys(SEG).map(function(k){var s=SEG[k];
  return{type:"Feature",properties:{id:k,color:color(s)},geometry:{type:"LineString",coordinates:s.c}}})}}
 function refresh(){var src=map.getSource("st");if(src)src.setData(geo())}
-function sheet(){var s=SEG[sel];if(!s)return;var d="";for(var i=0;i<s.cap;i++)d+='<b class="'+(i<s.free?"f":"")+'"></b>';
- document.getElementById("sheet").innerHTML='<div class="row"><span class="name">'+s.name+'</span><b style="color:'+color(s)+'">'+s.free+' / '+s.cap+' boş</b></div><div class="mute">Yaklaşık '+Math.round(s.len)+' m\'lik kısım · kapasite tahmini · demo verisi</div><div class="slots">'+d+'</div><div class="acts"><button class="p" onclick="act(1)">Park ettim</button><button class="l" onclick="act(-1)">Ayrılıyorum</button></div>'}
-function act(d){var s=SEG[sel];if(!s)return;
- if(d===1&&s.free>0){s.free--;toast("Kaydedildi.")}else if(d===-1&&s.free<s.cap){s.free++;toast("Yer açıldığı bildirildi.")}
- refresh();sheet()}
+function applyRemote(id){var s=SEG[id],r=REMOTE[id];if(!s||!r||typeof r.free!=="number")return;s.free=Math.max(0,Math.min(s.cap,r.free));s.ts=r.ts||0}
+
+function sheet(){
+ var s=SEG[sel];if(!s)return;var d="";
+ for(var i=0;i<s.cap;i++)d+='<b class="'+(s.free!=null&&i<s.free?"f":"")+'"></b>';
+ var head,acts,note;
+ if(s.free==null){
+  head='<b style="color:#5E6B78">Bilgi yok</b>';
+  note='Henüz kimse bildirmedi · yaklaşık '+Math.round(s.len)+' m · ilk bildiren sen ol';
+  acts='<button class="l" onclick="act(\'yer\')">Burada yer var</button><button class="d" onclick="act(\'dolu\')">Burası dolu</button>';
+ }else{
+  head='<b style="color:'+color(s)+'">'+s.free+' / '+s.cap+' boş</b>';
+  note='Son bildirim: '+(ago(s.ts)||"bilinmiyor")+' · yaklaşık '+Math.round(s.len)+' m';
+  acts='<button class="p" onclick="act(\'park\')">Park ettim</button><button class="l" onclick="act(\'ayril\')">Ayrılıyorum</button>';
+ }
+ document.getElementById("sheet").innerHTML='<div class="row"><span class="name">'+s.name+'</span>'+head+'</div><div class="mute">'+note+'</div><div class="slots">'+d+'</div><div class="acts">'+acts+'</div>';
+}
+function save(id){
+ var s=SEG[id];
+ if(!signedIn){toast("Bağlantı kurulamadı, kayıt sadece bu telefonda.");return}
+ setDoc(doc(db,"seg",id),{free:s.free,ts:Date.now()}).catch(function(){toast("Kaydedilemedi, tekrar dene.")});
+}
+window.act=function(kind){
+ var s=SEG[sel];if(!s)return;
+ if(kind==="park"){if(s.free>0)s.free--;toast("Kaydedildi, teşekkürler.")}
+ else if(kind==="ayril"){if(s.free<s.cap)s.free++;toast("Yer açıldığı herkese bildirildi.")}
+ else if(kind==="yer"){s.free=1;toast("Kaydedildi: en az 1 yer boş.")}
+ else if(kind==="dolu"){s.free=0;toast("Kaydedildi: burası dolu.")}
+ s.ts=Date.now();refresh();sheet();save(sel);
+};
+
 function addWays(j){
  j.elements.forEach(function(w){if(!w.geometry||w.geometry.length<2)return;
   var nm=(w.tags&&w.tags.name)||"İsimsiz sokak",c=w.geometry.map(function(p){return[p.lon,p.lat]});
   split(c).forEach(function(p,k){var id=w.id+"_"+k;if(SEG[id])return;
    var cap=Math.max(2,Math.min(12,Math.round(p.len/5.5)));
-   SEG[id]={name:nm,c:p.c,len:p.len,cap:cap,free:hash(id)%(cap+1)}})});
+   SEG[id]={name:nm,c:p.c,len:p.len,cap:cap,free:null,ts:0};applyRemote(id)})});
  refresh()}
 function fetchCell(cell,cb){
  var q='[out:json][timeout:25];way["highway"~"^(residential|tertiary|secondary|primary|unclassified|living_street|tertiary_link|secondary_link)$"]('+cell.s+','+cell.w+','+cell.n+','+cell.e+');out geom;';
@@ -62,10 +105,11 @@ function fetchCell(cell,cb){
 function pump(){
  if(busy||!queue.length){if(!busy)status();return}
  busy=true;var cell=queue.shift();stEl.textContent="Sokaklar yükleniyor… ("+(queue.length+1)+" bölge)";
- fetchCell(cell,function(ok){if(!ok)delete CELLS[cell.key];busy=false;
-  if(!ok){stEl.textContent="Bir bölge yüklenemedi. Haritayı biraz kaydır, tekrar dener."}
-  pump()})}
-function status(){stEl.textContent=map.getZoom()<MINZ?"Sokakları görmek için haritaya yakınlaş":Object.keys(SEG).length+" sokak parçası · demo doluluk verisi"}
+ fetchCell(cell,function(ok){if(!ok){delete CELLS[cell.key];stEl.textContent="Bir bölge yüklenemedi. Haritayı biraz kaydır, tekrar dener."}
+  busy=false;pump()})}
+function status(){
+ var live=online?"canlı bağlantı açık":"çevrimdışı";
+ stEl.textContent=map.getZoom()<MINZ?"Sokakları görmek için haritaya yakınlaş · "+live:Object.keys(SEG).length+" sokak parçası · "+live}
 function need(){
  if(map.getZoom()<MINZ){status();return}
  var b=map.getBounds(),x0=Math.floor(b.getWest()/CELL_LON),x1=Math.floor(b.getEast()/CELL_LON),y0=Math.floor(b.getSouth()/CELL_LAT),y1=Math.floor(b.getNorth()/CELL_LAT);
@@ -74,6 +118,17 @@ function need(){
   if(CELLS[key]||e<BOUNDS[0][0]||w>BOUNDS[1][0]||n<BOUNDS[0][1]||s>BOUNDS[1][1])continue;
   CELLS[key]=1;queue.push({key:key,w:w,s:s,e:e,n:n})}
  pump()}
+
+signInAnonymously(auth).then(function(){signedIn=true}).catch(function(){signedIn=false});
+onSnapshot(collection(db,"seg"),function(snap){
+ online=true;
+ snap.docChanges().forEach(function(ch){
+  var id=ch.doc.id;
+  if(ch.type==="removed"){delete REMOTE[id];if(SEG[id]){SEG[id].free=null;SEG[id].ts=0}}
+  else{REMOTE[id]=ch.doc.data();applyRemote(id)}});
+ refresh();if(sel&&SEG[sel])sheet();status();
+},function(){online=false;status()});
+
 map.on("load",function(){
  map.addSource("st",{type:"geojson",data:{type:"FeatureCollection",features:[]}});
  map.addLayer({id:"selL",type:"line",source:"st",filter:["==",["get","id"],""],layout:{"line-cap":"round"},paint:{"line-color":"#1D4ED8","line-width":16,"line-opacity":.35}});
